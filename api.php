@@ -2,8 +2,27 @@
 session_start();
 header('Content-Type: application/json');
 
+if (!class_exists('PDO')) {
+    http_response_code(500);
+    header('Content-Type: application/json');
+    echo json_encode(['error' => 'PHP PDO is not enabled. Enable PDO in php.ini before starting the website.']);
+    exit;
+}
+
+if (!in_array('sqlite', PDO::getAvailableDrivers(), true)) {
+    http_response_code(500);
+    header('Content-Type: application/json');
+    echo json_encode(['error' => 'SQLite support is not enabled. Enable pdo_sqlite in php.ini before starting the website.']);
+    exit;
+}
+
 $dbDir = __DIR__ . DIRECTORY_SEPARATOR . 'database';
-if (!is_dir($dbDir)) mkdir($dbDir, 0777, true);
+if (!is_dir($dbDir) && !mkdir($dbDir, 0777, true) && !is_dir($dbDir)) {
+    http_response_code(500);
+    header('Content-Type: application/json');
+    echo json_encode(['error' => 'Cannot create the database directory.']);
+    exit;
+}
 $dbFile = $dbDir . DIRECTORY_SEPARATOR . 'inventory.sqlite';
 
 $pdo = new PDO('sqlite:' . $dbFile);
