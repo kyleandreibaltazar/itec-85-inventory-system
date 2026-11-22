@@ -1,5 +1,11 @@
 # ITEC 85 Inventory System
 
+## Tech stack
+- html, css, javascript, php, sqlite
+
+## Requirements
+- php, sqlite3
+
 ## Instructions
 
 1. Clone niyo lang tong repo sa github (copy niyo to)
