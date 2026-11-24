@@ -1,3 +1,16 @@
+<?php
+$isHttps = !empty($_SERVER["HTTPS"]) && strtolower((string) $_SERVER["HTTPS"]) !== "off";
+header("X-Content-Type-Options: nosniff");
+header("X-Frame-Options: DENY");
+header("Referrer-Policy: strict-origin-when-cross-origin");
+header("Permissions-Policy: camera=(), microphone=(), geolocation=()");
+header(
+    "Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+);
+if ($isHttps) {
+    header("Strict-Transport-Security: max-age=31536000; includeSubDomains");
+}
+?>
 <!DOCTYPE html>
 <html lang="en">
   <head>
@@ -71,7 +84,6 @@
                 type="email"
                 class="form-control has-left-icon"
                 placeholder="Enter your university email"
-                value="loreyn.e@cvsu.edu.ph"
                 required
               />
             </div>
@@ -86,7 +98,6 @@
                 type="password"
                 class="form-control has-left-icon has-right-icon"
                 placeholder="Enter your password"
-                value="cvsu-admin-2026"
                 required
               />
               <button
@@ -100,10 +111,7 @@
           </div>
 
           <div class="login-row">
-            <label class="checkbox-label">
-              <input type="checkbox" id="remember-me" checked />
-              <span>Remember me</span>
-            </label>
+            <span></span>
             <button type="button" id="forgot-password-btn" class="link-btn">
               Forgot password?
             </button>
@@ -116,6 +124,38 @@
           </button>
 
           <div class="login-card-footer">Need access? Contact your system administrator.</div>
+          <button type="button" id="show-setup-btn" class="link-btn hidden">Set up the first administrator</button>
+        </form>
+
+        <form id="setup-form" class="login-card hidden" novalidate>
+          <div class="login-portal-label">First-time setup</div>
+          <h2 class="login-card-title">Create administrator</h2>
+          <p class="login-card-sub">Set up the first administrator account to begin.</p>
+
+          <div class="form-group">
+            <label class="form-label" for="setup-name">Administrator name</label>
+            <input id="setup-name" class="form-control" autocomplete="name" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="setup-email">Administrator email</label>
+            <input id="setup-email" type="email" class="form-control" autocomplete="email" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="setup-password">Password</label>
+            <input id="setup-password" type="password" class="form-control" autocomplete="new-password" minlength="12" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="setup-key">One-time setup key</label>
+            <input id="setup-key" type="password" class="form-control" autocomplete="off" required />
+          </div>
+          <button type="submit" class="btn btn-primary login-submit">
+            <span></span>
+            <span>Create administrator</span>
+            <span data-icon="arrowRight"></span>
+          </button>
+          <div class="login-card-footer">
+            Set INVENTORY_SETUP_KEY in the server environment before first-time setup.
+          </div>
         </form>
 
         <div class="login-copyright">© 2026 Cavite State University. All rights reserved.</div>
@@ -200,6 +240,6 @@
     <div id="modal-root"></div>
     <div id="toast-stack" class="toast-stack"></div>
 
-    <script src="assets/js/app.js?v=20261121g"></script>
+    <script src="assets/js/app.js?v=20261125a"></script>
   </body>
 </html>

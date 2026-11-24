@@ -604,6 +604,10 @@ const INITIAL_USERS = [
 
 const appState = {
   isAuthenticated: false,
+  csrfToken: '',
+  userId: '',
+  role: null,
+  userName: '',
   currentPage: 'dashboard', // dashboard | inventory | add-product | stock-in | stock-out | transactions | categories | users | reports | settings
   products: structuredClone(INITIAL_PRODUCTS),
   transactions: structuredClone(INITIAL_TRANSACTIONS),
@@ -675,7 +679,19 @@ function formatNumber(num) {
 }
 
 function todayFormatted() {
-  return 'Nov 17, 2026';
+  return new Date().toLocaleDateString('en-US', {
+    month: 'short',
+    day: '2-digit',
+    year: 'numeric',
+  });
+}
+
+function apiFetch(url, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if ((options.method || 'GET').toUpperCase() === 'POST') {
+    headers['X-CSRF-Token'] = appState.csrfToken;
+  }
+  return fetch(url, { ...options, headers, credentials: 'same-origin' });
 }
 
 function escapeHtml(str = '') {
@@ -722,7 +738,30 @@ const NAV_ITEMS = [
   { id: 'settings', label: 'Settings', icon: 'settings', title: 'Settings' },
 ];
 
+function hasRole(...roles) {
+  return roles.includes(appState.role);
+}
+
+function getVisibleNavItems() {
+  if (hasRole('Administrator')) return NAV_ITEMS;
+  if (hasRole('Inventory Staff')) {
+    return NAV_ITEMS.filter((item) => !['users', 'settings'].includes(item.id));
+  }
+  if (hasRole('Custodian', 'Lab Technician')) {
+    return NAV_ITEMS.filter((item) => !['users', 'settings'].includes(item.id));
+  }
+  return NAV_ITEMS.filter((item) =>
+    ['dashboard', 'inventory', 'transactions', 'categories', 'reports'].includes(item.id)
+  );
+}
+
 function navigate(page, opts = {}) {
+  if (
+    (!getVisibleNavItems().some((item) => item.id === page) && page !== 'add-product') ||
+    (page === 'add-product' && !hasRole('Administrator', 'Inventory Staff'))
+  ) {
+    page = 'dashboard';
+  }
   appState.currentPage = page;
   appState.openMenuId = null;
 
@@ -742,7 +781,11 @@ function navigate(page, opts = {}) {
 
 function renderSidebar() {
   const nav = document.getElementById('sidebar-nav');
-  nav.innerHTML = NAV_ITEMS.map((item) => {
+  const visibleItems = getVisibleNavItems();
+  if (!visibleItems.some((item) => item.id === appState.currentPage) && appState.currentPage !== 'add-product') {
+    appState.currentPage = 'dashboard';
+  }
+  nav.innerHTML = visibleItems.map((item) => {
     const isActive =
       appState.currentPage === item.id ||
       (appState.currentPage === 'add-product' && item.id === 'inventory');
@@ -783,7 +826,12 @@ function renderTopbar() {
 
   const lowCount = getLowStockProducts().length;
   const dot = document.getElementById('notif-dot');
-  dot.classList.toggle('hidden', lowCount === 0);
+  dot.classList.toggle(
+    'hidden',
+    lowCount === 0 || !appState.settings.autoLowStockAlert
+  );
+  document.querySelector('.profile-name').textContent = appState.userName || 'Staff member';
+  document.querySelector('.profile-role').textContent = appState.role || 'Staff';
 }
 
 // =========================================================================
@@ -833,7 +881,7 @@ function renderPage() {
 // -------------------------------------------------------------------------
 function renderDashboard(container) {
   const m = getMetrics();
-  const lowItems = getLowStockProducts();
+  const lowItems = appState.settings.autoLowStockAlert ? getLowStockProducts() : [];
   const filteredTx = appState.transactions.filter(
     (t) => appState.dashTxFilter === 'All' || t.type === appState.dashTxFilter
   );
@@ -849,7 +897,7 @@ function renderDashboard(container) {
         <div class="page-header">
           <div>
             <div class="page-eyebrow">Inventory Overview</div>
-            <h1 class="page-title">Welcome back, Loreyn</h1>
+            <h1 class="page-title">Welcome back, ${escapeHtml(appState.userName || 'Staff member')}</h1>
             <p class="page-subtitle">Here's what's happening with your campus inventory today.</p>
           </div>
           <div class="page-actions">
@@ -858,10 +906,10 @@ function renderDashboard(container) {
               <span>${appState.dateRange}</span>
               <span style="color:var(--text-muted);display:flex;">${ICONS.chevronDown}</span>
             </button>
-            <button id="dash-add-btn" class="btn btn-primary" type="button">
+            ${hasRole('Administrator', 'Inventory Staff') ? `<button id="dash-add-btn" class="btn btn-primary" type="button">
               <span>${ICONS.plus}</span>
               <span>Add new item</span>
-            </button>
+            </button>` : ''}
           </div>
         </div>
 
@@ -1025,13 +1073,13 @@ function renderDashboard(container) {
                   <div class="low-stock-item">
                     <div class="low-stock-row">
                       <div class="item-cell">
-                        <div class="item-thumb">${item.image ? `<img src="${item.image}" alt=""/>` : ICONS[item.icon] || ICONS.box}</div>
+                        <div class="item-thumb">${item.image ? `<img src="${escapeHtml(item.image)}" alt=""/>` : ICONS[item.icon] || ICONS.box}</div>
                         <div>
                           <div class="item-name">${escapeHtml(item.name)}</div>
                           <div class="item-sku">${escapeHtml(item.sku)} · Min. ${item.minLevel} ${item.unit}</div>
                         </div>
                       </div>
-                      <button class="low-stock-left" data-quick-restock="${item.id}" title="Click to restock">${item.quantity} left</button>
+                      ${hasRole('Administrator', 'Inventory Staff', 'Custodian', 'Lab Technician') ? `<button class="low-stock-left" data-quick-restock="${item.id}" title="Click to restock">${item.quantity} left</button>` : `<span class="low-stock-left">${item.quantity} left</span>`}
                     </div>
                     <div class="progress-track">
                       <div class="progress-fill" style="width:${pct}%"></div>
@@ -1057,7 +1105,8 @@ function renderDashboard(container) {
         </div>
       `;
 
-  document.getElementById('dash-add-btn').addEventListener('click', () => navigate('add-product'));
+  const dashboardAddButton = document.getElementById('dash-add-btn');
+  if (dashboardAddButton) dashboardAddButton.addEventListener('click', () => navigate('add-product'));
   document
     .getElementById('view-all-tx-btn')
     .addEventListener('click', () => navigate('transactions'));
@@ -1121,6 +1170,13 @@ function getFilteredInventory() {
 }
 
 function renderInventory(container) {
+  const canManageInventory = hasRole('Administrator', 'Inventory Staff');
+  const canAdjustStock = hasRole(
+    'Administrator',
+    'Inventory Staff',
+    'Custodian',
+    'Lab Technician'
+  );
   const m = getMetrics();
   const filtered = getFilteredInventory();
   const totalPages = Math.max(1, Math.ceil(filtered.length / appState.invPerPage));
@@ -1138,10 +1194,10 @@ function renderInventory(container) {
             <p class="page-subtitle">Manage university equipment, stock levels, and product records.</p>
           </div>
           <div class="page-actions">
-            <button id="inv-add-btn" class="btn btn-primary" type="button">
+            ${canManageInventory ? `<button id="inv-add-btn" class="btn btn-primary" type="button">
               <span>${ICONS.plus}</span>
               <span>Add new product</span>
-            </button>
+            </button>` : ''}
           </div>
         </div>
 
@@ -1235,7 +1291,7 @@ function renderInventory(container) {
           </div>
 
           ${
-            appState.selectedIds.size > 0
+            canManageInventory && appState.selectedIds.size > 0
               ? `
             <div class="bulk-bar">
               <span><strong>${appState.selectedIds.size}</strong> product(s) selected</span>
@@ -1252,16 +1308,16 @@ function renderInventory(container) {
             <table class="data-table">
               <thead>
                 <tr>
-                  <th style="width:42px;">
+                  ${canManageInventory ? `<th style="width:42px;">
                     <input type="checkbox" id="inv-select-all" ${allPageSelected ? 'checked' : ''} style="width:15px;height:15px;accent-color:var(--navy-900);cursor:pointer;" />
-                  </th>
+                  </th>` : ''}
                   <th>Product name</th>
                   <th>Category</th>
                   <th>Location</th>
                   <th>Available</th>
                   <th>Status</th>
                   <th>Last updated</th>
-                  <th style="width:52px;"></th>
+                  ${canAdjustStock || canManageInventory ? '<th style="width:52px;"></th>' : ''}
                 </tr>
               </thead>
               <tbody>
@@ -1277,12 +1333,12 @@ function renderInventory(container) {
                           : 'badge-red';
                     return `
                     <tr>
-                      <td>
+                      ${canManageInventory ? `<td>
                         <input type="checkbox" class="inv-row-check" data-id="${item.id}" ${appState.selectedIds.has(item.id) ? 'checked' : ''} style="width:15px;height:15px;accent-color:var(--navy-900);cursor:pointer;" />
-                      </td>
+                      </td>` : ''}
                       <td>
                         <div class="item-cell">
-                          <div class="item-thumb">${item.image ? `<img src="${item.image}" alt=""/>` : ICONS[item.icon] || ICONS.box}</div>
+                          <div class="item-thumb">${item.image ? `<img src="${escapeHtml(item.image)}" alt=""/>` : ICONS[item.icon] || ICONS.box}</div>
                           <div>
                             <div class="item-name">${escapeHtml(item.name)}</div>
                             <div class="item-sku">${escapeHtml(item.sku)}</div>
@@ -1299,23 +1355,23 @@ function renderInventory(container) {
                         <span class="badge ${badgeClass}"><span class="badge-dot"></span>${status}</span>
                       </td>
                       <td style="white-space:nowrap;">${item.updated}</td>
-                      <td>
+                      ${canAdjustStock || canManageInventory ? `<td>
                         <div class="action-menu-wrap">
                           <button class="icon-dots-btn" data-menu-toggle="${item.id}" type="button">${ICONS.dots}</button>
                           ${
                             appState.openMenuId === item.id
                               ? `
                             <div class="dropdown-menu">
-                              <button class="dropdown-item" data-action="stock-in" data-id="${item.id}">${ICONS.arrowDown} Quick Stock In</button>
-                              <button class="dropdown-item" data-action="stock-out" data-id="${item.id}">${ICONS.arrowUp} Quick Stock Out</button>
-                              <button class="dropdown-item" data-action="edit" data-id="${item.id}">${ICONS.edit} Edit product</button>
-                              <button class="dropdown-item danger" data-action="delete" data-id="${item.id}">${ICONS.trash} Delete</button>
+                              ${canAdjustStock ? `<button class="dropdown-item" data-action="stock-in" data-id="${item.id}">${ICONS.arrowDown} Quick Stock In</button>
+                              <button class="dropdown-item" data-action="stock-out" data-id="${item.id}">${ICONS.arrowUp} Quick Stock Out</button>` : ''}
+                              ${canManageInventory ? `<button class="dropdown-item" data-action="edit" data-id="${item.id}">${ICONS.edit} Edit product</button>
+                              <button class="dropdown-item danger" data-action="delete" data-id="${item.id}">${ICONS.trash} Delete</button>` : ''}
                             </div>
                           `
                               : ''
                           }
                         </div>
-                      </td>
+                      </td>` : ''}
                     </tr>
                   `;
                   })
@@ -1324,7 +1380,7 @@ function renderInventory(container) {
                   pageItems.length === 0
                     ? `
                   <tr>
-                    <td colspan="8" style="text-align:center;padding:42px 18px;color:var(--text-muted);">
+                    <td colspan="${6 + Number(canManageInventory) + Number(canAdjustStock)}" style="text-align:center;padding:42px 18px;color:var(--text-muted);">
                       No products matched your current search or filter criteria.
                     </td>
                   </tr>
@@ -1364,7 +1420,8 @@ function renderInventory(container) {
       `;
 
   // Bindings
-  document.getElementById('inv-add-btn').addEventListener('click', () => navigate('add-product'));
+  const addProductButton = document.getElementById('inv-add-btn');
+  if (addProductButton) addProductButton.addEventListener('click', () => navigate('add-product'));
 
   const searchInput = document.getElementById('inv-search-input');
   searchInput.addEventListener('input', (e) => {
@@ -1401,13 +1458,16 @@ function renderInventory(container) {
     .getElementById('inv-export-btn')
     .addEventListener('click', () => exportInventoryCSV(filtered));
 
-  document.getElementById('inv-select-all').addEventListener('change', (e) => {
-    pageItems.forEach((item) => {
-      if (e.target.checked) appState.selectedIds.add(item.id);
-      else appState.selectedIds.delete(item.id);
+  const selectAll = document.getElementById('inv-select-all');
+  if (selectAll) {
+    selectAll.addEventListener('change', (e) => {
+      pageItems.forEach((item) => {
+        if (e.target.checked) appState.selectedIds.add(item.id);
+        else appState.selectedIds.delete(item.id);
+      });
+      renderPage();
     });
-    renderPage();
-  });
+  }
 
   container.querySelectorAll('.inv-row-check').forEach((cb) => {
     cb.addEventListener('change', (e) => {
@@ -1431,7 +1491,7 @@ function renderInventory(container) {
       if (!ids.length) return;
       try {
         for (const id of ids) {
-          const response = await fetch('api.php?route=product-delete', {
+          const response = await apiFetch('api.php?route=product-delete', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ id }),
@@ -1557,7 +1617,8 @@ function renderAddProduct(container) {
               <div class="form-row-3">
                 <div class="form-group">
                   <label class="form-label" for="prod-qty">${editing ? 'Current quantity *' : 'Initial quantity *'}</label>
-                  <input id="prod-qty" type="number" min="0" class="form-control" value="${editing ? editing.quantity : 0}" required />
+                  <input id="prod-qty" type="number" min="0" class="form-control" value="${editing ? editing.quantity : 0}" ${editing ? 'readonly' : ''} required />
+                  ${editing ? '<div class="form-section-sub">Use Stock In or Stock Out to change quantity and keep the movement recorded.</div>' : ''}
                 </div>
                 <div class="form-group">
                   <label class="form-label" for="prod-min">Minimum stock level *</label>
@@ -1694,6 +1755,10 @@ function renderAddProduct(container) {
       showToast('Please upload a PNG or JPG image.', 'error');
       return;
     }
+    if (file.size > 5 * 1024 * 1024) {
+      showToast('Product images must be no larger than 5 MB.', 'error');
+      return;
+    }
     const reader = new FileReader();
     reader.onload = (ev) => {
       appState.uploadedImageDataUrl = ev.target.result;
@@ -1756,7 +1821,7 @@ function renderAddProduct(container) {
     };
 
     try {
-      const response = await fetch('api.php?route=product-save', {
+      const response = await apiFetch('api.php?route=product-save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -1831,8 +1896,11 @@ function renderStockMovement(container, mode) {
             <div class="form-group">
               <label class="form-label" for="sm-status">Transaction status</label>
               <select id="sm-status" class="form-control">
-                <option value="Completed">Completed (Update stock immediately)</option>
-                <option value="Pending">Pending (Reserve / awaiting approval)</option>
+                ${
+                  mode === 'Stock Out' && appState.settings.requireApprovalStockOut
+                    ? '<option value="Pending" selected>Pending (administrator approval required)</option>'
+                    : '<option value="Completed">Completed (Update stock immediately)</option><option value="Pending">Pending (Reserve / awaiting approval)</option>'
+                }
               </select>
             </div>
 
@@ -1891,7 +1959,7 @@ function renderStockMovement(container, mode) {
     }
 
     try {
-      const response = await fetch('api.php?route=transaction-save', {
+      const response = await apiFetch('api.php?route=transaction-save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1921,6 +1989,13 @@ function renderStockMovement(container, mode) {
 // 5. TRANSACTIONS PAGE
 // -------------------------------------------------------------------------
 function renderTransactionsPage(container) {
+  const canCreateTransactions = hasRole(
+    'Administrator',
+    'Inventory Staff',
+    'Custodian',
+    'Lab Technician'
+  );
+  const canApproveTransactions = hasRole('Administrator');
   const m = getMetrics();
   const filtered = appState.transactions.filter((t) => {
     const q = appState.txSearch.trim().toLowerCase();
@@ -1942,8 +2017,8 @@ function renderTransactionsPage(container) {
             <p class="page-subtitle">Complete audit trail of stock-ins, stock-outs, and pending campus requests.</p>
           </div>
           <div class="page-actions">
-            <button id="tx-in-btn" class="btn btn-secondary" type="button">${ICONS.arrowDown} Stock In</button>
-            <button id="tx-out-btn" class="btn btn-primary" type="button">${ICONS.arrowUp} Stock Out</button>
+            ${canCreateTransactions ? `<button id="tx-in-btn" class="btn btn-secondary" type="button">${ICONS.arrowDown} Stock In</button>
+            <button id="tx-out-btn" class="btn btn-primary" type="button">${ICONS.arrowUp} Stock Out</button>` : ''}
           </div>
         </div>
 
@@ -2015,7 +2090,7 @@ function renderTransactionsPage(container) {
                       </td>
                       <td style="text-align:right;">
                         ${
-                          t.status === 'Pending'
+                          t.status === 'Pending' && canApproveTransactions
                             ? `
                           <button class="btn btn-sm btn-primary" data-approve-tx="${t.id}" type="button">Approve</button>
                         `
@@ -2032,8 +2107,10 @@ function renderTransactionsPage(container) {
         </div>
       `;
 
-  document.getElementById('tx-in-btn').addEventListener('click', () => navigate('stock-in'));
-  document.getElementById('tx-out-btn').addEventListener('click', () => navigate('stock-out'));
+  const stockInButton = document.getElementById('tx-in-btn');
+  if (stockInButton) stockInButton.addEventListener('click', () => navigate('stock-in'));
+  const stockOutButton = document.getElementById('tx-out-btn');
+  if (stockOutButton) stockOutButton.addEventListener('click', () => navigate('stock-out'));
 
   document.getElementById('tx-search-input').addEventListener('input', (e) => {
     appState.txSearch = e.target.value;
@@ -2056,7 +2133,7 @@ function renderTransactionsPage(container) {
       const tx = appState.transactions.find((t) => t.id === btn.dataset.approveTx);
       if (!tx) return;
       try {
-        const response = await fetch('api.php?route=transaction-approve', {
+        const response = await apiFetch('api.php?route=transaction-approve', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ id: tx.id }),
@@ -2087,7 +2164,7 @@ function renderCategoriesPage(container) {
             <p class="page-subtitle">Organize campus equipment and supplies across ${appState.categories.length} standardized groups.</p>
           </div>
           <div class="page-actions">
-            <button id="add-cat-btn" class="btn btn-primary" type="button">${ICONS.plus} Add category</button>
+            ${hasRole('Administrator', 'Inventory Staff') ? `<button id="add-cat-btn" class="btn btn-primary" type="button">${ICONS.plus} Add category</button>` : ''}
           </div>
         </div>
 
@@ -2126,7 +2203,8 @@ function renderCategoriesPage(container) {
     });
   });
 
-  document.getElementById('add-cat-btn').addEventListener('click', openAddCategoryModal);
+  const addCategoryButton = document.getElementById('add-cat-btn');
+  if (addCategoryButton) addCategoryButton.addEventListener('click', openAddCategoryModal);
 }
 
 // -------------------------------------------------------------------------
@@ -2155,6 +2233,7 @@ function renderUsersPage(container) {
                   <th>Role</th>
                   <th>Status</th>
                   <th>Last Active</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -2179,6 +2258,9 @@ function renderUsersPage(container) {
                       </span>
                     </td>
                     <td>${escapeHtml(u.lastActive)}</td>
+                    <td>
+                      ${u.id === appState.userId ? '' : `<button class="btn btn-danger btn-sm" type="button" data-user-remove="${escapeHtml(u.id)}" aria-label="Remove account for ${escapeHtml(u.name)}">Remove</button>`}
+                    </td>
                   </tr>
                 `
                   )
@@ -2190,6 +2272,30 @@ function renderUsersPage(container) {
       `;
 
   document.getElementById('add-user-btn').addEventListener('click', openAddUserModal);
+  container.querySelectorAll('[data-user-remove]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const user = appState.users.find((item) => item.id === button.dataset.userRemove);
+      if (!user) return;
+      if (!window.confirm(`Remove ${user.name}'s account? They will lose access immediately. This cannot be undone.`)) return;
+
+      button.disabled = true;
+      try {
+        const response = await apiFetch('api.php?route=user-delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: user.id }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Could not remove account');
+        await hydrateFromApi();
+        renderPage();
+        showToast(`Removed ${user.name}'s account.`, 'warning');
+      } catch (error) {
+        button.disabled = false;
+        showToast(error.message, 'error');
+      }
+    });
+  });
 }
 
 // -------------------------------------------------------------------------
@@ -2320,7 +2426,7 @@ function renderSettingsPage(container) {
       requireApprovalStockOut: document.getElementById('set-approve').checked,
     };
     try {
-      const response = await fetch('api.php?route=settings-save', {
+      const response = await apiFetch('api.php?route=settings-save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(settings),
@@ -2328,6 +2434,8 @@ function renderSettingsPage(container) {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Could not save settings');
       appState.settings = settings;
+      renderTopbar();
+      renderPage();
       showToast('System settings saved.');
     } catch (error) {
       showToast(error.message, 'error');
@@ -2390,7 +2498,7 @@ function openQuickAdjustModal(productId, defaultType = 'Stock In') {
     const ref = document.getElementById('qa-ref').value.trim();
     if (qty <= 0) return;
     try {
-      const response = await fetch('api.php?route=adjust-stock', {
+      const response = await apiFetch('api.php?route=adjust-stock', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2420,7 +2528,7 @@ async function deleteProduct(id) {
   const prod = appState.products.find((p) => p.id === id);
   if (!prod) return;
   try {
-    const response = await fetch('api.php?route=product-delete', {
+    const response = await apiFetch('api.php?route=product-delete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id }),
@@ -2483,7 +2591,7 @@ function openAddCategoryModal() {
       document.getElementById('nc-desc').value.trim() || 'Campus equipment category.';
     if (!name || !code) return;
     try {
-      const response = await fetch('api.php?route=category-save', {
+      const response = await apiFetch('api.php?route=category-save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, code, description }),
@@ -2521,7 +2629,8 @@ function openAddUserModal() {
                 </div>
                 <div class="form-group">
                   <label class="form-label">Initial Password *</label>
-                  <input id="nu-password" type="password" class="form-control" value="Cvsu@2026" required />
+                  <input id="nu-password" type="password" class="form-control" minlength="12" autocomplete="new-password" required />
+                  <div class="form-section-sub">Use at least 12 characters. The password is stored as a hash.</div>
                 </div>
                 <div class="form-row-2">
                   <div class="form-group" style="margin-bottom:0;">
@@ -2533,6 +2642,7 @@ function openAddUserModal() {
                     <select id="nu-role" class="form-control">
                       <option>Inventory Staff</option>
                       <option>Custodian</option>
+                      <option>Lab Technician</option>
                       <option>Administrator</option>
                       <option>Viewer</option>
                     </select>
@@ -2559,12 +2669,12 @@ function openAddUserModal() {
     const password = document.getElementById('nu-password').value;
     const department = document.getElementById('nu-dept').value.trim();
     const role = document.getElementById('nu-role').value;
-    if (!name || !email || password.length < 8) {
-      showToast('Enter a name, email, and password of at least 8 characters.', 'error');
+    if (!name || !email || password.length < 12) {
+      showToast('Enter a name, email, and password of at least 12 characters.', 'error');
       return;
     }
     try {
-      const response = await fetch('api.php?route=user-save', {
+      const response = await apiFetch('api.php?route=user-save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, email, password, department, role }),
@@ -2601,7 +2711,7 @@ function openCommandPalette() {
 
   const renderResults = (query = '') => {
     const q = query.trim().toLowerCase();
-    const matchingPages = NAV_ITEMS.filter((n) => !q || n.label.toLowerCase().includes(q));
+    const matchingPages = getVisibleNavItems().filter((n) => !q || n.label.toLowerCase().includes(q));
     const matchingProducts = appState.products
       .filter(
         (p) =>
@@ -2678,19 +2788,24 @@ function exportInventoryCSV(rows) {
     'Status',
     'Last Updated',
   ];
+  const csvText = (value) => {
+    const text = String(value ?? '');
+    const safeText = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+    return `"${safeText.replace(/"/g, '""')}"`;
+  };
   const csvRows = [
     headers.join(','),
     ...rows.map((r) =>
       [
-        `"${r.name.replace(/"/g, '""')}"`,
-        `"${r.sku}"`,
-        `"${r.category}"`,
-        `"${r.location}"`,
+        csvText(r.name),
+        csvText(r.sku),
+        csvText(r.category),
+        csvText(r.location),
         r.quantity,
         r.minLevel,
-        r.unit,
-        `"${getStatus(r)}"`,
-        `"${r.updated}"`,
+        csvText(r.unit),
+        csvText(getStatus(r)),
+        csvText(r.updated),
       ].join(',')
     ),
   ];
@@ -2711,7 +2826,7 @@ function exportInventoryCSV(rows) {
 // =========================================================================
 function renderNotificationsPopover() {
   const pop = document.getElementById('notif-popover');
-  const low = getLowStockProducts();
+  const low = appState.settings.autoLowStockAlert ? getLowStockProducts() : [];
   pop.innerHTML = `
         <div style="padding:14px 16px;border-bottom:1px solid var(--border-light);display:flex;justify-content:space-between;align-items:center;">
           <strong style="font-size:13.5px;">Inventory Alerts</strong>
@@ -2768,9 +2883,28 @@ function enterApp() {
 
 async function signOut() {
   try {
-    await fetch('api.php?route=logout', { method: 'POST' });
-  } catch (_) {}
+    const response = await apiFetch('api.php?route=logout', { method: 'POST' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Could not sign out');
+  } catch (error) {
+    showToast(error.message || 'Could not sign out. Please try again.', 'error');
+    return;
+  }
+  let nextCsrfToken = '';
+  try {
+    const response = await fetch('api.php?route=session', { credentials: 'same-origin' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Could not refresh the sign-in token');
+    nextCsrfToken = data.csrfToken || '';
+  } catch (error) {
+    console.error(error);
+    showToast('Signed out. Refresh the page before signing in again.', 'warning');
+  }
   appState.isAuthenticated = false;
+  appState.userId = '';
+  appState.role = null;
+  appState.userName = '';
+  appState.csrfToken = nextCsrfToken;
   document.getElementById('app-view').classList.add('hidden');
   document.getElementById('login-view').classList.remove('hidden');
   document.getElementById('login-password').value = '';
@@ -2778,18 +2912,14 @@ async function signOut() {
 }
 
 async function hydrateFromApi() {
-  try {
-    const response = await fetch('api.php?route=bootstrap');
-    if (!response.ok) throw new Error('Database unavailable');
-    const data = await response.json();
-    appState.products = data.products || [];
-    appState.categories = data.categories || [];
-    appState.users = data.users || [];
-    appState.transactions = data.transactions || [];
-    if (data.settings) appState.settings = { ...appState.settings, ...data.settings };
-  } catch (error) {
-    console.error(error);
-  }
+  const response = await fetch('api.php?route=bootstrap', { credentials: 'same-origin' });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || 'Database unavailable');
+  appState.products = data.products || [];
+  appState.categories = data.categories || [];
+  appState.users = data.users || [];
+  appState.transactions = data.transactions || [];
+  if (data.settings) appState.settings = { ...appState.settings, ...data.settings };
 }
 
 // Boot
@@ -2798,11 +2928,24 @@ document.addEventListener('DOMContentLoaded', async () => {
   try {
     const sessionResponse = await fetch('api.php?route=session');
     const sessionData = await sessionResponse.json();
+    appState.csrfToken = sessionData.csrfToken || '';
     if (sessionData.authenticated) {
+      appState.userId = sessionData.userId || '';
+      appState.role = sessionData.role;
+      appState.userName = sessionData.name || '';
       await hydrateFromApi();
       enterApp();
+    } else {
+      const setupResponse = await fetch('api.php?route=setup-status');
+      const setupData = await setupResponse.json();
+      if (setupData.setupRequired) {
+        document.getElementById('show-setup-btn').classList.remove('hidden');
+      }
     }
-  } catch (_) {}
+  } catch (error) {
+    console.error(error);
+    showToast('Could not check the sign-in session. Reload the page to try again.', 'error');
+  }
 
   // Password eye toggle
   const pwInput = document.getElementById('login-password');
@@ -2814,25 +2957,65 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   document.getElementById('forgot-password-btn').addEventListener('click', () => {
-    showToast('Password reset link sent to your CvSU university email.');
+    showToast('Password reset is not configured. Contact your system administrator.', 'warning');
+  });
+
+  document.getElementById('show-setup-btn').addEventListener('click', () => {
+    document.getElementById('login-form').classList.add('hidden');
+    document.getElementById('setup-form').classList.remove('hidden');
+  });
+
+  document.getElementById('setup-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = document.getElementById('setup-name').value.trim();
+    const email = document.getElementById('setup-email').value.trim();
+    const password = document.getElementById('setup-password').value;
+    const setupKey = document.getElementById('setup-key').value;
+    if (!name || !email || password.length < 12 || !setupKey) {
+      showToast('Enter a name, valid email, password of at least 12 characters, and setup key.', 'error');
+      return;
+    }
+    try {
+      const response = await apiFetch('api.php?route=setup-admin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, email, password, setupKey }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not create administrator');
+      appState.userId = data.userId;
+      appState.role = data.role;
+      appState.userName = data.name;
+      appState.csrfToken = data.csrfToken;
+      document.getElementById('setup-key').value = '';
+      await hydrateFromApi();
+      enterApp();
+      showToast('Administrator account created. Keep the setup key private and remove it from the server environment.');
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
   });
 
   document.getElementById('login-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const email = document.getElementById('login-email').value.trim();
-    const pw = document.getElementById('login-password').value.trim();
+    const pw = document.getElementById('login-password').value;
     if (!email || !pw) {
       showToast('Please enter your university email and password.', 'error');
       return;
     }
     try {
-      const response = await fetch('api.php?route=login', {
+      const response = await apiFetch('api.php?route=login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password: pw }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Login failed');
+      appState.userId = data.userId;
+      appState.role = data.role;
+      appState.userName = data.name;
+      appState.csrfToken = data.csrfToken;
       await hydrateFromApi();
       enterApp();
       showToast(`Welcome back, ${data.name || 'Loreyn'}!`);
